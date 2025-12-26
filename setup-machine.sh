@@ -16,7 +16,8 @@ set -euo pipefail
 # ---------------------------
 # Config (override via env)
 # ---------------------------
-DOTFILES_REPO_URL="${DOTFILES_REPO_URL:-git@github.com:alfonsosanchez12/dotfiles.git}"
+# DOTFILES_REPO_URL="${DOTFILES_REPO_URL:-git@github.com:alfonsosanchez12/dotfiles.git}"
+DOTFILES_REPO_URL="${DOTFILES_REPO_URL:-https://github.com/alfonsosanchez12/dotfiles.git}"
 DOTFILES_DIR="$HOME/dotfiles" # fixed by design
 
 DEFAULT_APPS=(zsh nvim starship bat eza yazi karabiner)
@@ -41,6 +42,76 @@ run() {
 }
 
 hascmd() { command -v "$1" >/dev/null 2>&1; }
+
+backup_root_init() {
+  # One backup dir per run
+  if [[ -z "${BACKUP_ROOT:-}" ]]; then
+    BACKUP_ROOT="$(mktemp -d /tmp/bootstrap-machine-backup.XXXXXX)"
+    log "Backup directory: $BACKUP_ROOT"
+  fi
+}
+
+backup_and_remove_path() {
+  local p="$1"
+  [[ -e "$p" || -L "$p" ]] || return 0 # exists OR symlink
+
+  backup_root_init
+
+  # Keep structure relative to $HOME if possible, else flatten
+  local rel
+  if [[ "$p" == "$HOME/"* ]]; then
+    rel="${p#"$HOME/"}"
+  else
+    rel="$(echo "$p" | sed 's#^/##')"
+  fi
+
+  local dst="$BACKUP_ROOT/$rel"
+  run "mkdir -p \"$(dirname "$dst")\""
+
+  log "Backing up and removing: $p -> $dst"
+  run "mv \"$p\" \"$dst\""
+}
+
+# Known target paths per stow package (add/adjust as your dotfiles evolve)
+targets_for_app() {
+  case "$1" in
+  zsh)
+    # common conflicts:
+    echo "$HOME/.zshrc"
+    echo "$HOME/.config/zsh"
+    ;;
+  nvim)
+    echo "$HOME/.config/nvim"
+    ;;
+  starship)
+    echo "$HOME/.config/starship"
+    ;;
+  bat)
+    echo "$HOME/.config/bat"
+    ;;
+  eza)
+    echo "$HOME/.config/eza"
+    ;;
+  yazi)
+    echo "$HOME/.config/yazi"
+    ;;
+  karabiner)
+    echo "$HOME/.config/karabiner"
+    ;;
+  *)
+    return 0
+    ;;
+  esac
+}
+
+backup_and_remove_targets_for_app() {
+  local app="$1"
+  local p
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    backup_and_remove_path "$p"
+  done < <(targets_for_app "$app" || true)
+}
 
 # ---------------------------
 # Bootstrap step (local ./bootstrap.sh)
@@ -159,14 +230,21 @@ stow_app() {
   # Dry-run to detect conflicts
   log "Stow dry-run: $app"
   if ! stow -n -d "$DOTFILES_DIR" -t "$HOME" "${flags[@]}" "$app" >/dev/null 2>&1; then
-    warn "Conflicts detected for '$app'."
-    if [[ "$FORCE_STOW" == "1" ]]; then
-      warn "FORCE_STOW=1: using --adopt (moves existing files into stow package)."
-      flags+=(--adopt)
-    else
-      err "Refusing to stow '$app' due to conflicts."
-      err "Resolve conflicts manually or re-run with FORCE_STOW=1 (be careful)."
-      return 1
+    warn "Conflicts detected for '$app'. Backing up known target paths to /tmp and retrying..."
+    backup_and_remove_targets_for_app "$app"
+
+    # Re-check after cleanup
+    log "Stow dry-run (after cleanup): $app"
+    if ! stow -n -d "$DOTFILES_DIR" -t "$HOME" "${flags[@]}" "$app" >/dev/null 2>&1; then
+      warn "Still conflicts after cleanup for '$app'."
+      if [[ "$FORCE_STOW" == "1" ]]; then
+        warn "FORCE_STOW=1: using --adopt (moves existing files into stow package)."
+        flags+=(--adopt)
+      else
+        err "Refusing to stow '$app' due to remaining conflicts."
+        err "Check stow output manually or re-run with FORCE_STOW=1 (be careful)."
+        return 1
+      fi
     fi
   fi
 

@@ -337,7 +337,7 @@ install_nft-iptables_arch() {
   # Ensure nft variant is installed, if not, install it
   if ! pacman -Qi iptables-nft >/dev/null 2>&1; then
     log "Arch: installing iptables-nft (preferred)"
-    run "$SUDO pacman -S --noconfirm iptables-nft"
+    run "$SUDO pacman -S iptables-nft"
   else
     log "Arch: iptables-nft already installed"
   fi
